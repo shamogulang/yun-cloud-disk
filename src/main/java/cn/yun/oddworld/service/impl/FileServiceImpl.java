@@ -12,20 +12,25 @@ import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import cn.yun.oddworld.rocketmq.TransferFileProducer;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import cn.yun.oddworld.kafka.TransferFileEvent;
+import cn.yun.oddworld.mq.TransferFileEvent;
+import cn.yun.oddworld.ConfigConstant;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import java.net.URI;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -36,6 +41,18 @@ public class FileServiceImpl implements FileService {
 
     @Value("${aws.s3.bucket}")
     private String bucket;
+
+    @Value("${aws.s3.region}")
+    private String region;
+
+    @Value("${aws.s3.access-key}")
+    private String accessKey;
+
+    @Value("${aws.s3.secret-key}")
+    private String secretKey;
+
+    @Value("${aws.s3.endpoint}")
+    private String endpoint;
 
     @Autowired
     private TransferFileProducer transferFileProducer;
@@ -85,8 +102,24 @@ public class FileServiceImpl implements FileService {
         fileInfo.setFileHash(fileUploadRequest.getFileHash());
         fileInfo.setUserId(fileUploadRequest.getUserId());
         fileInfo.setStatus(fileUploadRequest.getStatus());
-        fileInfo.setUploadUrl("");
         repository.insert(fileInfo);
+        String s3Key = ConfigConstant.generateKeyWithHash(fileInfo.getFileName(), fileInfo.getFileHash());
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucket)
+                .key(s3Key)
+                .build();
+        software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
+                software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                        .signatureDuration(Duration.ofMinutes(60))
+                        .putObjectRequest(putObjectRequest)
+                        .build();
+        S3Presigner presigner = S3Presigner.builder()
+                .region(Region.of(region))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .endpointOverride(URI.create(endpoint))
+                .build();
+        String uploadUrl = presigner.presignPutObject(putPresignRequest).url().toString();
+        fileInfo.setUploadUrl(uploadUrl);
         fileInfo.setId(fileInfo.getId());
         return fileInfo;
     }
@@ -139,6 +172,9 @@ public class FileServiceImpl implements FileService {
                 .build();
 
         S3Presigner presigner = S3Presigner.builder()
+                .region(Region.of(region))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .endpointOverride(URI.create(endpoint))
                 .build();
 
         return presigner.presignGetObject(presignRequest).url().toString();
@@ -149,7 +185,7 @@ public class FileServiceImpl implements FileService {
         repository.completeByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
         // 查询文件信息
         FileInfo fileInfo = repository.selectByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
-        if (fileInfo != null) {
+        if (fileInfo != null && fileInfo.getFileType() != null && fileInfo.getFileType().contains("image")) {
             try {
                 String now = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).toString();
                 String messageId = UUID.randomUUID().toString();
@@ -167,6 +203,58 @@ public class FileServiceImpl implements FileService {
                 event.setEventType("file.created");
                 event.setMessageId(messageId);
                 event.setUserId(String.valueOf(fileInfo.getUserId()));
+                // 生成 S3 上传地址
+                String s3Key = ConfigConstant.generateKeyWithHash(fileInfo.getFileName(), fileInfo.getFileHash());
+                PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(s3Key)
+                        .build();
+                software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
+                        software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                                .signatureDuration(Duration.ofMinutes(60))
+                                .putObjectRequest(putObjectRequest)
+                                .build();
+                S3Presigner presigner = S3Presigner.builder()
+                        .region(Region.of(region))
+                        .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                        .endpointOverride(URI.create(endpoint))
+                        .build();
+                // 生成 S3 下载地址
+                GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(s3Key)
+                        .build();
+                GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                        .signatureDuration(Duration.ofMinutes(60))
+                        .getObjectRequest(getObjectRequest)
+                        .build();
+                String downloadUrl = presigner.presignGetObject(presignRequest).url().toString();
+                event.setDownloadUrl(downloadUrl);
+                // 生成缩略图上传地址
+                String fileName = fileInfo.getFileName();
+                String hash = fileInfo.getFileHash();
+                int extIndex = fileName.lastIndexOf('.');
+                String baseName = (extIndex != -1) ? fileName.substring(0, extIndex) : fileName;
+                baseName = baseName + "-" + hash + "-thumb-";
+                event.setBaseName(baseName);
+                String ext = ".jpg";
+                String[] sizes = {"S", "M", "L"};
+                Map<String, String> thumbUploadUrls = new HashMap<>();
+                for (String size : sizes) {
+                    String thumbKey = baseName  + size + ext;
+                    PutObjectRequest thumbPutObjectRequest = PutObjectRequest.builder()
+                            .bucket(bucket)
+                            .key(thumbKey)
+                            .build();
+                    software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest thumbPutPresignRequest =
+                            software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                                    .signatureDuration(Duration.ofMinutes(60))
+                                    .putObjectRequest(thumbPutObjectRequest)
+                                    .build();
+                    String thumbUploadUrl = presigner.presignPutObject(thumbPutPresignRequest).url().toString();
+                    thumbUploadUrls.put(size, thumbUploadUrl);
+                }
+                event.setThumbUploadUrls(thumbUploadUrls);
                 String json = objectMapper.writeValueAsString(event);
                 transferFileProducer.send("transfer_file", json);
             } catch (Exception e) {

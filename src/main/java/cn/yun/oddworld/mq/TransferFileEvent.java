@@ -1,6 +1,7 @@
-package cn.yun.oddworld.kafka;
+package cn.yun.oddworld.mq;
 
 import lombok.Data;
+import java.util.Map;
 
 @Data
 public class TransferFileEvent {
@@ -17,4 +18,7 @@ public class TransferFileEvent {
     private String eventType;
     private String messageId;
     private String userId;
-} 
+    private String downloadUrl;
+    private Map<String, String> thumbUploadUrls;
+    private String baseName;
+}

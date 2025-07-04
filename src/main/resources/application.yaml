@@ -44,7 +44,7 @@ aws:
     accessKey: minio
     secretKey: 12345678
     bucket: personal
-    region: 'us-east-1'
+    region: us-east-1
 auth:
   whitelist:
     - /error
