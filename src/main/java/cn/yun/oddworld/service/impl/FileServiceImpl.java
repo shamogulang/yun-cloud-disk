@@ -31,6 +31,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.HashMap;
 import java.util.Map;
+import cn.yun.oddworld.dto.FileInfoWithThumbnails;
+import cn.yun.oddworld.dto.ThumbnailUrl;
 
 @Service
 @RequiredArgsConstructor
@@ -234,6 +236,31 @@ public class FileServiceImpl implements FileService {
     @Override
     public List<FileInfo> getRecentFiles(Long userId, java.time.LocalDateTime fromTime) {
         return repository.selectRecentFiles(userId, fromTime);
+    }
+
+    @Override
+    public List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, String path) {
+        List<FileInfo> fileInfos = repository.selectByPathAndUserId(userId, path);
+        List<FileInfoWithThumbnails> result = new java.util.ArrayList<>();
+        for (FileInfo fileInfo : fileInfos) {
+            FileInfoWithThumbnails withThumb = new FileInfoWithThumbnails();
+            org.springframework.beans.BeanUtils.copyProperties(fileInfo, withThumb);
+            if (fileInfo.getFileType() != null && (fileInfo.getFileType().contains("image") || fileInfo.getFileType().contains("video"))) {
+                String hash = fileInfo.getFileHash();
+                String baseName = fileInfo.getId() + "-" + hash;
+                java.util.List<ThumbnailUrl> thumbnailUrls = new java.util.ArrayList<>();
+                for (String size : new String[]{"L", "M", "S"}) {
+                    String thumbKey = baseName + "-thumb-" + size + ".jpg";
+                    String url = generateDownloadUrl(thumbKey);
+                    thumbnailUrls.add(new ThumbnailUrl(size, url));
+                }
+                withThumb.setThumbnailUrls(thumbnailUrls);
+            } else {
+                withThumb.setThumbnailUrls(java.util.Collections.emptyList());
+            }
+            result.add(withThumb);
+        }
+        return result;
     }
 
     /**

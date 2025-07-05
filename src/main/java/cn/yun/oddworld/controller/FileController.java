@@ -3,6 +3,7 @@ package cn.yun.oddworld.controller;
 import cn.yun.oddworld.dto.BaseResult;
 import cn.yun.oddworld.dto.FileCompleteRequest;
 import cn.yun.oddworld.dto.FileUploadRequest;
+import cn.yun.oddworld.dto.FileInfoWithThumbnails;
 import cn.yun.oddworld.entity.FileInfo;
 import cn.yun.oddworld.service.FileService;
 import lombok.RequiredArgsConstructor;
@@ -66,9 +67,9 @@ public class FileController {
     }
 
     @GetMapping("/list")
-    public ResponseEntity<BaseResult<List<FileInfo>>> listFiles(@RequestAttribute("userId") Long userId,
+    public ResponseEntity<BaseResult<List<FileInfoWithThumbnails>>> listFiles(@RequestAttribute("userId") Long userId,
             @RequestParam(required = true) String path) {
-        List<FileInfo> fileInfos = fileService.listFiles(userId, path);
+        List<FileInfoWithThumbnails> fileInfos = fileService.listFilesWithThumbnails(userId, path);
         return ResponseEntity.ok(new BaseResult<>(200, null, fileInfos));
     }
 
