@@ -21,4 +21,5 @@ public class TransferFileEvent {
     private String downloadUrl;
     private Map<String, String> thumbUploadUrls;
     private String baseName;
+    private Map<String, String> transcodedVideoUploadUrls;
 }

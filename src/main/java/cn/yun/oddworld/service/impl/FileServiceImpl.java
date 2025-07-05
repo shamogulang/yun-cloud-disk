@@ -103,22 +103,8 @@ public class FileServiceImpl implements FileService {
         fileInfo.setUserId(fileUploadRequest.getUserId());
         fileInfo.setStatus(fileUploadRequest.getStatus());
         repository.insert(fileInfo);
-        String s3Key = ConfigConstant.generateKeyWithHash(fileInfo.getFileName(), fileInfo.getFileHash());
-        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-                .bucket(bucket)
-                .key(s3Key)
-                .build();
-        software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
-                software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
-                        .signatureDuration(Duration.ofMinutes(60))
-                        .putObjectRequest(putObjectRequest)
-                        .build();
-        S3Presigner presigner = S3Presigner.builder()
-                .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .endpointOverride(URI.create(endpoint))
-                .build();
-        String uploadUrl = presigner.presignPutObject(putPresignRequest).url().toString();
+        String s3Key = ConfigConstant.generateKeyWithHash(String.valueOf(fileInfo.getId()), fileInfo.getFileHash());
+        String uploadUrl = generateUploadUrl(s3Key);
         fileInfo.setUploadUrl(uploadUrl);
         fileInfo.setId(fileInfo.getId());
         return fileInfo;
@@ -160,24 +146,7 @@ public class FileServiceImpl implements FileService {
     public String getFileUrl(Long fileId, Long userId) {
         // TODO: Get file info from database
         FileInfo fileInfo = new FileInfo();
-
-        GetObjectRequest getObjectRequest = GetObjectRequest.builder()
-                .bucket(bucket)
-                .key(fileInfo.getFilePath())
-                .build();
-
-        GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
-                .signatureDuration(Duration.ofMinutes(60))
-                .getObjectRequest(getObjectRequest)
-                .build();
-
-        S3Presigner presigner = S3Presigner.builder()
-                .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .endpointOverride(URI.create(endpoint))
-                .build();
-
-        return presigner.presignGetObject(presignRequest).url().toString();
+        return generateDownloadUrl(fileInfo.getFilePath());
     }
 
     @Override
@@ -185,7 +154,7 @@ public class FileServiceImpl implements FileService {
         repository.completeByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
         // 查询文件信息
         FileInfo fileInfo = repository.selectByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
-        if (fileInfo != null && fileInfo.getFileType() != null && fileInfo.getFileType().contains("image")) {
+        if (fileInfo != null && fileInfo.getFileType() != null && (fileInfo.getFileType().contains("image") || fileInfo.getFileType().contains("video"))) {
             try {
                 String now = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).toString();
                 String messageId = UUID.randomUUID().toString();
@@ -203,58 +172,26 @@ public class FileServiceImpl implements FileService {
                 event.setEventType("file.created");
                 event.setMessageId(messageId);
                 event.setUserId(String.valueOf(fileInfo.getUserId()));
-                // 生成 S3 上传地址
-                String s3Key = ConfigConstant.generateKeyWithHash(fileInfo.getFileName(), fileInfo.getFileHash());
-                PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-                        .bucket(bucket)
-                        .key(s3Key)
-                        .build();
-                software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
-                        software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
-                                .signatureDuration(Duration.ofMinutes(60))
-                                .putObjectRequest(putObjectRequest)
-                                .build();
-                S3Presigner presigner = S3Presigner.builder()
-                        .region(Region.of(region))
-                        .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                        .endpointOverride(URI.create(endpoint))
-                        .build();
+                
                 // 生成 S3 下载地址
-                GetObjectRequest getObjectRequest = GetObjectRequest.builder()
-                        .bucket(bucket)
-                        .key(s3Key)
-                        .build();
-                GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
-                        .signatureDuration(Duration.ofMinutes(60))
-                        .getObjectRequest(getObjectRequest)
-                        .build();
-                String downloadUrl = presigner.presignGetObject(presignRequest).url().toString();
+                String s3Key = ConfigConstant.generateKeyWithHash(String.valueOf(fileInfo.getId()) , fileInfo.getFileHash());
+                String downloadUrl = generateDownloadUrl(s3Key);
                 event.setDownloadUrl(downloadUrl);
+                
                 // 生成缩略图上传地址
-                String fileName = fileInfo.getFileName();
                 String hash = fileInfo.getFileHash();
-                int extIndex = fileName.lastIndexOf('.');
-                String baseName = (extIndex != -1) ? fileName.substring(0, extIndex) : fileName;
-                baseName = baseName + "-" + hash + "-thumb-";
+                String baseName = fileInfo.getId() + "-" + hash;
                 event.setBaseName(baseName);
-                String ext = ".jpg";
-                String[] sizes = {"S", "M", "L"};
-                Map<String, String> thumbUploadUrls = new HashMap<>();
-                for (String size : sizes) {
-                    String thumbKey = baseName  + size + ext;
-                    PutObjectRequest thumbPutObjectRequest = PutObjectRequest.builder()
-                            .bucket(bucket)
-                            .key(thumbKey)
-                            .build();
-                    software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest thumbPutPresignRequest =
-                            software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
-                                    .signatureDuration(Duration.ofMinutes(60))
-                                    .putObjectRequest(thumbPutObjectRequest)
-                                    .build();
-                    String thumbUploadUrl = presigner.presignPutObject(thumbPutPresignRequest).url().toString();
-                    thumbUploadUrls.put(size, thumbUploadUrl);
-                }
+                
+                Map<String, String> thumbUploadUrls = generateThumbnailUploadUrls(baseName);
                 event.setThumbUploadUrls(thumbUploadUrls);
+                
+                // 如果是视频类型，生成转码视频上传地址
+                if (fileInfo.getFileType() != null && fileInfo.getFileType().contains("video")) {
+                    Map<String, String> transcodedVideoUploadUrls = generateTranscodedVideoUploadUrls(baseName);
+                    event.setTranscodedVideoUploadUrls(transcodedVideoUploadUrls);
+                }
+                
                 String json = objectMapper.writeValueAsString(event);
                 transferFileProducer.send("transfer_file", json);
             } catch (Exception e) {
@@ -297,5 +234,101 @@ public class FileServiceImpl implements FileService {
     @Override
     public List<FileInfo> getRecentFiles(Long userId, java.time.LocalDateTime fromTime) {
         return repository.selectRecentFiles(userId, fromTime);
+    }
+
+    /**
+     * 生成 S3 上传地址
+     */
+    private String generateUploadUrl(String s3Key) {
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucket)
+                .key(s3Key)
+                .build();
+        software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
+                software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                        .signatureDuration(Duration.ofMinutes(60))
+                        .putObjectRequest(putObjectRequest)
+                        .build();
+        S3Presigner presigner = createS3Presigner();
+        return presigner.presignPutObject(putPresignRequest).url().toString();
+    }
+
+    /**
+     * 生成 S3 下载地址
+     */
+    private String generateDownloadUrl(String s3Key) {
+        GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+                .bucket(bucket)
+                .key(s3Key)
+                .build();
+        GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofMinutes(60))
+                .getObjectRequest(getObjectRequest)
+                .build();
+        S3Presigner presigner = createS3Presigner();
+        return presigner.presignGetObject(presignRequest).url().toString();
+    }
+
+    /**
+     * 生成缩略图上传地址
+     */
+    private Map<String, String> generateThumbnailUploadUrls(String baseName) {
+        String ext = ".jpg";
+        String[] sizes = {"S", "M", "L"};
+        Map<String, String> thumbUploadUrls = new HashMap<>();
+        S3Presigner presigner = createS3Presigner();
+        
+        for (String size : sizes) {
+            String thumbKey = baseName + "-thumb-" + size + ext;
+            PutObjectRequest thumbPutObjectRequest = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(thumbKey)
+                    .build();
+            software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest thumbPutPresignRequest =
+                    software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                            .signatureDuration(Duration.ofMinutes(60))
+                            .putObjectRequest(thumbPutObjectRequest)
+                            .build();
+            String thumbUploadUrl = presigner.presignPutObject(thumbPutPresignRequest).url().toString();
+            thumbUploadUrls.put(size, thumbUploadUrl);
+        }
+        return thumbUploadUrls;
+    }
+
+    /**
+     * 生成转码视频上传地址
+     */
+    private Map<String, String> generateTranscodedVideoUploadUrls(String baseName) {
+        String ext = ".mp4";
+        String[] videoSizes = {"1080", "720", "480"};
+        Map<String, String> transcodedVideoUploadUrls = new HashMap<>();
+        S3Presigner presigner = createS3Presigner();
+        
+        for (String size : videoSizes) {
+            String videoKey = baseName + "-transcode-" + size + ext;
+            PutObjectRequest videoPutObjectRequest = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(videoKey)
+                    .build();
+            software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest videoPutPresignRequest =
+                    software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest.builder()
+                            .signatureDuration(Duration.ofMinutes(60))
+                            .putObjectRequest(videoPutObjectRequest)
+                            .build();
+            String videoUploadUrl = presigner.presignPutObject(videoPutPresignRequest).url().toString();
+            transcodedVideoUploadUrls.put(size, videoUploadUrl);
+        }
+        return transcodedVideoUploadUrls;
+    }
+
+    /**
+     * 创建 S3Presigner 实例
+     */
+    private S3Presigner createS3Presigner() {
+        return S3Presigner.builder()
+                .region(Region.of(region))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .endpointOverride(URI.create(endpoint))
+                .build();
     }
 }
