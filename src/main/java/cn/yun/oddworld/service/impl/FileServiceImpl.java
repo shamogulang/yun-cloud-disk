@@ -146,9 +146,9 @@ public class FileServiceImpl implements FileService {
 
     @Override
     public String getFileUrl(Long fileId, Long userId) {
-        // TODO: Get file info from database
-        FileInfo fileInfo = new FileInfo();
-        return generateDownloadUrl(fileInfo.getFilePath());
+        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
+        String s3Key = fileInfo.getId()+"-"+ fileInfo.getFileHash();
+        return generateDownloadUrl(s3Key);
     }
 
     @Override
@@ -357,5 +357,38 @@ public class FileServiceImpl implements FileService {
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
                 .endpointOverride(URI.create(endpoint))
                 .build();
+    }
+
+    @Override
+    public List<String> getFileUrls(List<Long> fileIds, Long userId) {
+        List<String> urls = new java.util.ArrayList<>();
+        if (fileIds != null) {
+            for (Long fileId : fileIds) {
+                urls.add(getFileUrl(fileId, userId));
+            }
+        }
+        return urls;
+    }
+
+    @Override
+    public String getVideoPlayUrl(Long fileId, Long userId,Long resolution) {
+        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
+        if (fileInfo == null || fileInfo.getFileType() == null || !fileInfo.getFileType().contains("video")) {
+            throw new RuntimeException("该文件不是视频类型");
+        }
+        String s3Key = fileInfo.getId() + "-" + fileInfo.getFileHash()+ "-transcode-"+resolution+".mp4";
+        // 可根据业务调整为转码后的视频key
+        return generateDownloadUrl(s3Key);
+    }
+
+    @Override
+    public String getImagePreviewUrl(Long fileId, Long userId) {
+        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
+        if (fileInfo == null || fileInfo.getFileType() == null || !fileInfo.getFileType().contains("image")) {
+            throw new RuntimeException("该文件不是图片类型");
+        }
+        String s3Key = fileInfo.getId() + "-" + fileInfo.getFileHash();
+        // 可根据业务调整为缩略图key
+        return generateDownloadUrl(s3Key);
     }
 }

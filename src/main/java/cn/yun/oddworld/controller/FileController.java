@@ -99,4 +99,26 @@ public class FileController {
         List<FileInfo> files = fileService.getRecentFiles(userId, fromTime);
         return ResponseEntity.ok(new BaseResult<>(200, null, files));
     }
+
+    @PostMapping("/urls")
+    public ResponseEntity<BaseResult<List<String>>> getFileUrls(
+            @RequestBody List<Long> fileIds,
+            @RequestAttribute("userId") Long userId) {
+        return ResponseEntity.ok(new BaseResult<>(200, null, fileService.getFileUrls(fileIds, userId)));
+    }
+
+    @GetMapping("/{fileId}/{resolution}/video-play-url")
+    public ResponseEntity<BaseResult<String>> getVideoPlayUrl(
+            @PathVariable Long fileId,
+            @PathVariable Long resolution,
+            @RequestAttribute("userId") Long userId) {
+        return ResponseEntity.ok(new BaseResult<>(200, null, fileService.getVideoPlayUrl(fileId, userId, resolution)));
+    }
+
+    @GetMapping("/{fileId}/image-preview-url")
+    public ResponseEntity<BaseResult<String>> getImagePreviewUrl(
+            @PathVariable Long fileId,
+            @RequestAttribute("userId") Long userId) {
+        return ResponseEntity.ok(new BaseResult<>(200, null,fileService.getImagePreviewUrl(fileId, userId)));
+    }
 } 

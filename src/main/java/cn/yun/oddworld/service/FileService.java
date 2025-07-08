@@ -18,6 +18,9 @@ public interface FileService {
     FileInfo getFileInfo(Long fileId, Long userId);
     List<FileInfo> listFiles(Long userId, String path);
     String getFileUrl(Long fileId, Long userId);
+    List<String> getFileUrls(List<Long> fileIds, Long userId);
+    String getVideoPlayUrl(Long fileId, Long userId,Long resolution);
+    String getImagePreviewUrl(Long fileId, Long userId);
     void initializeUser(Long userId);
     int countNormalFiles(Long userId);
     int countRecentNormalFiles(Long userId, java.time.LocalDateTime fromTime);
