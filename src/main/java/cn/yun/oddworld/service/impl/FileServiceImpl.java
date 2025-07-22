@@ -1,9 +1,12 @@
 package cn.yun.oddworld.service.impl;
 
+import cn.yun.oddworld.cache.StorageBucketCache;
 import cn.yun.oddworld.dto.FileCompleteRequest;
 import cn.yun.oddworld.dto.FileUploadRequest;
-import cn.yun.oddworld.entity.FileInfo;
-import cn.yun.oddworld.repository.FileInfoRepository;
+import cn.yun.oddworld.dto.FileInfo;
+import cn.yun.oddworld.entity.StorageBucket;
+import cn.yun.oddworld.entity.UserFile;
+import cn.yun.oddworld.entity.PhysicalFile;
 import cn.yun.oddworld.service.FileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,16 +36,28 @@ import java.util.HashMap;
 import java.util.Map;
 import cn.yun.oddworld.dto.FileInfoWithThumbnails;
 import cn.yun.oddworld.dto.ThumbnailUrl;
+import cn.yun.oddworld.mapper.UserFileMapper;
+import cn.yun.oddworld.mapper.PhysicalFileMapper;
+import cn.yun.oddworld.mapper.FileMetadataMapper;
+import cn.yun.oddworld.mapper.FileDerivativeMapper;
+import cn.yun.oddworld.mapper.StorageBucketMapper;
 
 @Service
 @RequiredArgsConstructor
 public class FileServiceImpl implements FileService {
 
     private final S3Client s3Client;
-    private final FileInfoRepository repository;
+    private final UserFileMapper userFileMapper;
+    private final PhysicalFileMapper physicalFileMapper;
+    private final FileMetadataMapper fileMetadataMapper;
+    private final FileDerivativeMapper fileDerivativeMapper;
+    private final StorageBucketMapper storageBucketMapper;
+    private final cn.yun.oddworld.cache.StorageBucketCache storageBucketCache;
 
     @Value("${aws.s3.bucket}")
     private String bucket;
+
+
 
     @Value("${aws.s3.region}")
     private String region;
@@ -61,6 +76,46 @@ public class FileServiceImpl implements FileService {
     @Autowired
     private ObjectMapper objectMapper;
 
+    private FileInfo mapToFileInfo(UserFile userFile, PhysicalFile physical) {
+        FileInfo dto = new FileInfo();
+        dto.setId(userFile.getId());
+        dto.setUserId(userFile.getUserId());
+        dto.setParentId(userFile.getParentId());
+        dto.setFileName(userFile.getFileName());
+        dto.setIsDirectory(userFile.getIsDirectory());
+        dto.setFileCategory(userFile.getFileCategory());
+        dto.setStatus(userFile.getStatus());
+        dto.setCreatedAt(userFile.getCreatedAt());
+        dto.setUpdatedAt(userFile.getUpdatedAt());
+        dto.setHidden(userFile.getHidden());
+        if (Boolean.FALSE.equals(userFile.getIsDirectory()) && physical != null) {
+            dto.setFileSize(physical.getFileSize());
+            dto.setFileType(physical.getFileType());
+            dto.setFileHash(physical.getFileHash());
+        }
+        return dto;
+    }
+
+    private FileInfoWithThumbnails mapToFileInfoWithThumbnails(UserFile userFile, PhysicalFile physical) {
+        FileInfoWithThumbnails dto = new FileInfoWithThumbnails();
+        FileInfo base = mapToFileInfo(userFile, physical);
+        org.springframework.beans.BeanUtils.copyProperties(base, dto);
+        if (physical != null && physical.getFileType() != null && (physical.getFileType().contains("image") || physical.getFileType().contains("video"))) {
+            StorageBucket storageBucket =  storageBucketCache.getStorageBucketMap().get(physical.getStorageId());
+            String baseName = physical.getId() + "-" + physical.getFileHash();
+            java.util.List<ThumbnailUrl> thumbnailUrls = new java.util.ArrayList<>();
+            for (String size : new String[]{"L", "M", "S"}) {
+                String thumbKey = baseName + "-thumb-" + size + ".jpg";
+                String url = generateDownloadUrl(thumbKey, storageBucket);
+                thumbnailUrls.add(new ThumbnailUrl(size, url));
+            }
+            dto.setThumbnailUrls(thumbnailUrls);
+        } else {
+            dto.setThumbnailUrls(java.util.Collections.emptyList());
+        }
+        return dto;
+    }
+
     @Override
     public FileInfo uploadFile(MultipartFile file, Long userId) {
         try {
@@ -78,16 +133,31 @@ public class FileServiceImpl implements FileService {
 
             s3Client.putObject(putObjectRequest, RequestBody.fromInputStream(file.getInputStream(), fileSize));
 
-            // Save file info to database
-            FileInfo fileInfo = new FileInfo();
-            fileInfo.setFileName(fileName);
-            fileInfo.setFilePath(filePath);
-            fileInfo.setFileType(fileType);
-            fileInfo.setFileSize(fileSize);
-            fileInfo.setUserId(userId);
-            // TODO: Save to database
-            repository.insert(fileInfo);
-            return fileInfo;
+            // Create physical file entry
+            PhysicalFile physical = new PhysicalFile();
+            physical.setFileHash(filePath); // Use filePath as hash for now
+            physical.setFileSize(fileSize);
+            physical.setFileType(fileType);
+            physical.setS3Path(filePath);
+            physical.setReferenceCount(1);
+            physical.setStorageId(1L); // Default storage ID
+            physical.setCreatedAt(java.time.LocalDateTime.now());
+            physicalFileMapper.insert(physical);
+
+            // Save user file info to database
+            UserFile userFile = new UserFile();
+            userFile.setUserId(userId);
+            userFile.setFileName(fileName);
+            userFile.setPhysicalFileId(physical.getId());
+            userFile.setIsDirectory(false);
+            userFile.setFileCategory("other");
+            userFile.setStatus(2); // Default status for uploaded file
+            userFile.setCreatedAt(java.time.LocalDateTime.now());
+            userFile.setUpdatedAt(java.time.LocalDateTime.now());
+            userFile.setHidden(false);
+            userFileMapper.insert(userFile);
+
+            return mapToFileInfo(userFile, physical);
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload file", e);
         }
@@ -95,170 +165,211 @@ public class FileServiceImpl implements FileService {
 
     @Override
     public FileInfo prepareFile(FileUploadRequest fileUploadRequest) {
-        // Save file info to database
-        FileInfo fileInfo = new FileInfo();
-        fileInfo.setFileName(fileUploadRequest.getFileName());
-        fileInfo.setFilePath(fileUploadRequest.getFilePath());
-        fileInfo.setFileType(fileUploadRequest.getFileType());
-        fileInfo.setFileSize(fileUploadRequest.getFileSize());
-        fileInfo.setFileHash(fileUploadRequest.getFileHash());
-        fileInfo.setUserId(fileUploadRequest.getUserId());
-        fileInfo.setStatus(fileUploadRequest.getStatus());
-        repository.insert(fileInfo);
-        String s3Key = ConfigConstant.generateKeyWithHash(String.valueOf(fileInfo.getId()), fileInfo.getFileHash());
-        String uploadUrl = generateUploadUrl(s3Key);
-        fileInfo.setUploadUrl(uploadUrl);
-        fileInfo.setId(fileInfo.getId());
-        return fileInfo;
+        if ("directory".equals(fileUploadRequest.getFileType())) {
+            UserFile dir = new UserFile();
+            dir.setUserId(fileUploadRequest.getUserId());
+            dir.setParentId(fileUploadRequest.getParentId());
+            dir.setFileName(fileUploadRequest.getFileName());
+            dir.setIsDirectory(true);
+            dir.setFileCategory(fileUploadRequest.getFileCategory());
+            dir.setStatus(fileUploadRequest.getStatus());
+            dir.setCreatedAt(java.time.LocalDateTime.now());
+            dir.setPhysicalFileId(0L);
+            dir.setUpdatedAt(java.time.LocalDateTime.now());
+            dir.setHidden(false);
+            userFileMapper.insert(dir);
+            return mapToFileInfo(dir, null);
+        } else {
+            PhysicalFile physical = physicalFileMapper.selectByHash(fileUploadRequest.getFileHash());
+            FileInfo dto;
+            if (physical == null) {
+                // 物理文件不存在，生成物理文件记录和上传地址
+                physical = new PhysicalFile();
+                physical.setFileHash(fileUploadRequest.getFileHash());
+                physical.setFileSize(fileUploadRequest.getFileSize());
+                physical.setFileType(fileUploadRequest.getFileType());
+                physical.setReferenceCount(1);
+                physical.setS3Path("");
+                physical.setStorageId(storageBucketCache.getDefaultBucket().getId());
+                physical.setCreatedAt(java.time.LocalDateTime.now());
+                physicalFileMapper.insert(physical);
+
+                // S3 key = 物理文件ID + fileHash
+                String s3Key = physical.getId() + "-" + physical.getFileHash();
+                StorageBucket storageBucket = storageBucketCache.getStorageBucketMap().get(physical.getStorageId());
+                String uploadUrl = generateUploadUrl(s3Key, storageBucket);
+
+                UserFile userFile = new UserFile();
+                userFile.setUserId(fileUploadRequest.getUserId());
+                userFile.setParentId(fileUploadRequest.getParentId());
+                userFile.setFileName(fileUploadRequest.getFileName());
+                userFile.setPhysicalFileId(physical.getId());
+                userFile.setIsDirectory(false);
+                userFile.setFileCategory(fileUploadRequest.getFileCategory());
+                userFile.setStatus(fileUploadRequest.getStatus());
+                userFile.setCreatedAt(java.time.LocalDateTime.now());
+                userFile.setUpdatedAt(java.time.LocalDateTime.now());
+                userFile.setHidden(false);
+                userFileMapper.insert(userFile);
+
+                dto = mapToFileInfo(userFile, physical);
+                dto.setUploadUrl(uploadUrl); // 返回上传地址
+            } else {
+                // 物理文件已存在，走秒传
+                physical.setReferenceCount(physical.getReferenceCount() + 1);
+                physicalFileMapper.update(physical);
+
+                UserFile userFile = new UserFile();
+                userFile.setUserId(fileUploadRequest.getUserId());
+                userFile.setParentId(fileUploadRequest.getParentId());
+                userFile.setFileName(fileUploadRequest.getFileName());
+                userFile.setPhysicalFileId(physical.getId());
+                userFile.setIsDirectory(false);
+                userFile.setFileCategory(fileUploadRequest.getFileCategory());
+                userFile.setStatus(fileUploadRequest.getStatus());
+                userFile.setCreatedAt(java.time.LocalDateTime.now());
+                userFile.setUpdatedAt(java.time.LocalDateTime.now());
+                userFile.setHidden(false);
+                userFileMapper.insert(userFile);
+
+                dto = mapToFileInfo(userFile, physical);
+                // 不返回uploadUrl
+            }
+            return dto;
+        }
     }
 
     @Override
     public void deleteFile(Long fileId, Long userId) {
-        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
-        if (fileInfo == null) {
+        UserFile userFile = userFileMapper.selectById(fileId);
+        if (userFile == null || !userFile.getUserId().equals(userId)) {
             throw new RuntimeException("File not found");
         }
-        if (fileInfo.getSystemStatus() != null && fileInfo.getSystemStatus() == 1) {
-            throw new RuntimeException("System file cannot be deleted");
-        }
-
-        // 基于 file_path 作为父ID 递归删除所有子文件和子目录
-        if ("directory".equals(fileInfo.getFileType())) {
-            String parentId = String.valueOf(fileInfo.getId());
-            List<FileInfo> children = repository.selectByUserIdAndParentId(userId, parentId);
-            for (FileInfo child : children) {
-                deleteFile(child.getId(), userId);
+        if (Boolean.TRUE.equals(userFile.getIsDirectory())) {
+            List<UserFile> children = userFileMapper.selectByUserId(userId);
+            for (UserFile child : children) {
+                if (child.getParentId() != null && child.getParentId().equals(fileId)) {
+                    deleteFile(child.getId(), userId);
+                }
+            }
+        } else if (userFile.getPhysicalFileId() != null) {
+            PhysicalFile physical = physicalFileMapper.selectById(userFile.getPhysicalFileId());
+            if (physical != null) {
+                int refCount = physical.getReferenceCount() - 1;
+                if (refCount <= 0) {
+                    physicalFileMapper.deleteById(physical.getId());
+                } else {
+                    physical.setReferenceCount(refCount);
+                    physicalFileMapper.update(physical);
+                }
             }
         }
-        // 删除自己
-        repository.deleteByIdAndUserId(fileId, userId);
+        userFileMapper.deleteById(fileId);
     }
 
     @Override
     public FileInfo getFileInfo(Long fileId, Long userId) {
-        return repository.selectByIdAndUserId(fileId, userId);
+        UserFile userFile = userFileMapper.selectById(fileId);
+        if (userFile == null || !userFile.getUserId().equals(userId)) {
+            throw new RuntimeException("File not found");
+        }
+        PhysicalFile physical = userFile.getPhysicalFileId() != null ? physicalFileMapper.selectById(userFile.getPhysicalFileId()) : null;
+        return mapToFileInfo(userFile, physical);
     }
 
     @Override
     public List<FileInfo> listFiles(Long userId, String path) {
-        return repository.selectByPathAndUserId(userId, path);
+        List<UserFile> userFiles = userFileMapper.selectByUserId(userId);
+        List<FileInfo> result = new java.util.ArrayList<>();
+        for (UserFile userFile : userFiles) {
+            PhysicalFile physical = userFile.getPhysicalFileId() != null ? physicalFileMapper.selectById(userFile.getPhysicalFileId()) : null;
+            result.add(mapToFileInfo(userFile, physical));
+        }
+        return result;
     }
 
     @Override
     public String getFileUrl(Long fileId, Long userId) {
-        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
-        String s3Key = fileInfo.getId()+"-"+ fileInfo.getFileHash();
-        return generateDownloadUrl(s3Key);
+        UserFile userFile = userFileMapper.selectById(fileId);
+        if (userFile == null || !userFile.getUserId().equals(userId)) {
+            throw new RuntimeException("File not found");
+        }
+        if (userFile.getPhysicalFileId() == null) {
+            throw new RuntimeException("No physical file for this user file");
+        }
+        PhysicalFile physical = physicalFileMapper.selectById(userFile.getPhysicalFileId());
+        if (physical == null) {
+            throw new RuntimeException("Physical file not found");
+        }
+        StorageBucket storageBucket = storageBucketCache.getStorageBucketMap().get(physical.getStorageId());
+
+        String s3Key = physical.getId() + "-" + physical.getFileHash();
+        return generateDownloadUrl(s3Key, storageBucket);
     }
 
     @Override
     public void completeFile(FileCompleteRequest fileCompleteRequest) {
-        repository.completeByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
-        // 查询文件信息
-        FileInfo fileInfo = repository.selectByIdAndUserId(fileCompleteRequest.getFileId(), fileCompleteRequest.getUserId());
-        if (fileInfo != null && fileInfo.getFileType() != null && (fileInfo.getFileType().contains("image") || fileInfo.getFileType().contains("video"))) {
-            try {
-                String now = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).toString();
-                String messageId = UUID.randomUUID().toString();
-                TransferFileEvent event = new TransferFileEvent();
-                event.setFullFileIdPath(fileInfo.getFilePath());
-                event.setFileHash(fileInfo.getFileHash());
-                event.setCreatedAt(fileInfo.getCreateTime() != null ? fileInfo.getCreateTime().toString() : now);
-                event.setParentFileId(fileInfo.getFilePath()); // 需根据业务补充
-                event.setFilePosition(fileInfo.getFilePath());
-                event.setName(fileInfo.getFileName());
-                event.setFileType(fileInfo.getFileType());
-                event.setFileId(String.valueOf(fileInfo.getId()));
-                event.setUpdatedAt(fileInfo.getUpdateTime() != null ? fileInfo.getUpdateTime().toString() : now);
-                event.setEventTime(now);
-                event.setEventType("file.created");
-                event.setMessageId(messageId);
-                event.setUserId(String.valueOf(fileInfo.getUserId()));
-                
-                // 生成 S3 下载地址
-                String s3Key = ConfigConstant.generateKeyWithHash(String.valueOf(fileInfo.getId()) , fileInfo.getFileHash());
-                String downloadUrl = generateDownloadUrl(s3Key);
-                event.setDownloadUrl(downloadUrl);
-                
-                // 生成缩略图上传地址
-                String hash = fileInfo.getFileHash();
-                String baseName = fileInfo.getId() + "-" + hash;
-                event.setBaseName(baseName);
-                
-                Map<String, String> thumbUploadUrls = generateThumbnailUploadUrls(baseName);
-                event.setThumbUploadUrls(thumbUploadUrls);
-                
-                // 如果是视频类型，生成转码视频上传地址
-                if (fileInfo.getFileType() != null && fileInfo.getFileType().contains("video")) {
-                    Map<String, String> transcodedVideoUploadUrls = generateTranscodedVideoUploadUrls(baseName);
-                    event.setTranscodedVideoUploadUrls(transcodedVideoUploadUrls);
-                }
-                
-                String json = objectMapper.writeValueAsString(event);
-                transferFileProducer.send("transfer_file", json);
-            } catch (Exception e) {
-                // 日志记录异常
-                e.printStackTrace();
-            }
+        // No-op for now, or update status if needed
+        UserFile userFile = userFileMapper.selectById(fileCompleteRequest.getFileId());
+        if (userFile != null && userFile.getUserId().equals(fileCompleteRequest.getUserId())) {
+            userFile.setStatus(2); // Mark as complete
+            userFileMapper.update(userFile);
         }
     }
 
     @Override
     public void initializeUser(Long userId) {
         final String dirName = "我的应用收藏";
-        final String path = "/";
-        FileInfo existingDir = repository.selectByUserIdAndFileNameAndPath(userId, dirName, path);
-        if (existingDir == null) {
-            // 1. 再插入数据库
-            FileInfo dirInfo = new FileInfo();
-            dirInfo.setFileName(dirName);
-            dirInfo.setFilePath(path);
-            dirInfo.setFileType("directory");
-            dirInfo.setFileSize(0L);
-            dirInfo.setFileHash(""); // No hash for directory
-            dirInfo.setUserId(userId);
-            dirInfo.setStatus(2);
-            dirInfo.setSystemStatus(1);
-            repository.insert(dirInfo);
+        final Long parentId = null;
+        List<UserFile> existingDirs = userFileMapper.selectByUserId(userId);
+        boolean exists = existingDirs.stream().anyMatch(f -> Boolean.TRUE.equals(f.getIsDirectory()) && dirName.equals(f.getFileName()) && (f.getParentId() == null));
+        if (!exists) {
+            UserFile dir = new UserFile();
+            dir.setUserId(userId);
+            dir.setParentId(parentId);
+            dir.setFileName(dirName);
+            dir.setIsDirectory(true);
+            dir.setFileCategory("other");
+            dir.setStatus(2);
+            dir.setCreatedAt(java.time.LocalDateTime.now());
+            dir.setUpdatedAt(java.time.LocalDateTime.now());
+            dir.setHidden(false);
+            userFileMapper.insert(dir);
         }
     }
 
     @Override
     public int countNormalFiles(Long userId) {
-        return repository.countNormalFiles(userId);
+        List<UserFile> files = userFileMapper.selectByUserId(userId);
+        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 1).count();
     }
 
     @Override
     public int countRecentNormalFiles(Long userId, java.time.LocalDateTime fromTime) {
-        return repository.countRecentNormalFiles(userId, fromTime);
+        List<UserFile> files = userFileMapper.selectByUserId(userId);
+        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 1 && f.getCreatedAt() != null && f.getCreatedAt().isAfter(fromTime)).count();
     }
 
     @Override
     public List<FileInfo> getRecentFiles(Long userId, java.time.LocalDateTime fromTime) {
-        return repository.selectRecentFiles(userId, fromTime);
+        List<UserFile> files = userFileMapper.selectByUserId(userId);
+        List<FileInfo> recent = new java.util.ArrayList<>();
+        for (UserFile f : files) {
+            if (f.getCreatedAt() != null && f.getCreatedAt().isAfter(fromTime)) {
+                PhysicalFile physical = f.getPhysicalFileId() != null ? physicalFileMapper.selectById(f.getPhysicalFileId()) : null;
+                recent.add(mapToFileInfo(f, physical));
+            }
+        }
+        return recent;
     }
 
     @Override
-    public List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, String path) {
-        List<FileInfo> fileInfos = repository.selectByPathAndUserId(userId, path);
+    public List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, Long parentId) {
+        List<UserFile> userFiles = userFileMapper.selectByUserIdAndParentId(userId, parentId);
         List<FileInfoWithThumbnails> result = new java.util.ArrayList<>();
-        for (FileInfo fileInfo : fileInfos) {
-            FileInfoWithThumbnails withThumb = new FileInfoWithThumbnails();
-            org.springframework.beans.BeanUtils.copyProperties(fileInfo, withThumb);
-            if (fileInfo.getFileType() != null && (fileInfo.getFileType().contains("image") || fileInfo.getFileType().contains("video"))) {
-                String hash = fileInfo.getFileHash();
-                String baseName = fileInfo.getId() + "-" + hash;
-                java.util.List<ThumbnailUrl> thumbnailUrls = new java.util.ArrayList<>();
-                for (String size : new String[]{"L", "M", "S"}) {
-                    String thumbKey = baseName + "-thumb-" + size + ".jpg";
-                    String url = generateDownloadUrl(thumbKey);
-                    thumbnailUrls.add(new ThumbnailUrl(size, url));
-                }
-                withThumb.setThumbnailUrls(thumbnailUrls);
-            } else {
-                withThumb.setThumbnailUrls(java.util.Collections.emptyList());
-            }
-            result.add(withThumb);
+        for (UserFile userFile : userFiles) {
+            PhysicalFile physical = userFile.getPhysicalFileId() != null ? physicalFileMapper.selectById(userFile.getPhysicalFileId()) : null;
+            result.add(mapToFileInfoWithThumbnails(userFile, physical));
         }
         return result;
     }
@@ -266,9 +377,9 @@ public class FileServiceImpl implements FileService {
     /**
      * 生成 S3 上传地址
      */
-    private String generateUploadUrl(String s3Key) {
+    private String generateUploadUrl(String s3Key, StorageBucket storageBucket) {
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-                .bucket(bucket)
+                .bucket(storageBucket.getBucketName())
                 .key(s3Key)
                 .build();
         software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest putPresignRequest =
@@ -276,23 +387,23 @@ public class FileServiceImpl implements FileService {
                         .signatureDuration(Duration.ofMinutes(60))
                         .putObjectRequest(putObjectRequest)
                         .build();
-        S3Presigner presigner = createS3Presigner();
+        S3Presigner presigner = createS3Presigner(storageBucket);
         return presigner.presignPutObject(putPresignRequest).url().toString();
     }
 
     /**
      * 生成 S3 下载地址
      */
-    private String generateDownloadUrl(String s3Key) {
+    private String generateDownloadUrl(String s3Key, StorageBucket storageBucket) {
         GetObjectRequest getObjectRequest = GetObjectRequest.builder()
-                .bucket(bucket)
+                .bucket(storageBucket.getBucketName())
                 .key(s3Key)
                 .build();
         GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
                 .signatureDuration(Duration.ofMinutes(60))
                 .getObjectRequest(getObjectRequest)
                 .build();
-        S3Presigner presigner = createS3Presigner();
+        S3Presigner presigner = createS3Presigner(storageBucket);
         return presigner.presignGetObject(presignRequest).url().toString();
     }
 
@@ -303,7 +414,7 @@ public class FileServiceImpl implements FileService {
         String ext = ".jpg";
         String[] sizes = {"S", "M", "L"};
         Map<String, String> thumbUploadUrls = new HashMap<>();
-        S3Presigner presigner = createS3Presigner();
+        S3Presigner presigner = createS3Presigner(null);
         
         for (String size : sizes) {
             String thumbKey = baseName + "-thumb-" + size + ext;
@@ -329,7 +440,7 @@ public class FileServiceImpl implements FileService {
         String ext = ".mp4";
         String[] videoSizes = {"1080", "720", "480"};
         Map<String, String> transcodedVideoUploadUrls = new HashMap<>();
-        S3Presigner presigner = createS3Presigner();
+        S3Presigner presigner = createS3Presigner(null);
         
         for (String size : videoSizes) {
             String videoKey = baseName + "-transcode-" + size + ext;
@@ -351,11 +462,11 @@ public class FileServiceImpl implements FileService {
     /**
      * 创建 S3Presigner 实例
      */
-    private S3Presigner createS3Presigner() {
+    private S3Presigner createS3Presigner(StorageBucket storageBucket) {
         return S3Presigner.builder()
-                .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .endpointOverride(URI.create(endpoint))
+                .region(Region.of(storageBucket.getRegion()))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(storageBucket.getAccessKey(), storageBucket.getSecretKey())))
+                .endpointOverride(URI.create(storageBucket.getEndpoint()))
                 .build();
     }
 
@@ -372,23 +483,33 @@ public class FileServiceImpl implements FileService {
 
     @Override
     public String getVideoPlayUrl(Long fileId, Long userId,Long resolution) {
-        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
-        if (fileInfo == null || fileInfo.getFileType() == null || !fileInfo.getFileType().contains("video")) {
+        UserFile userFile = userFileMapper.selectById(fileId);
+        if (userFile == null || userFile.getPhysicalFileId() == null) {
+            throw new RuntimeException("File not found or no physical file");
+        }
+        PhysicalFile physical = physicalFileMapper.selectById(userFile.getPhysicalFileId());
+        if (physical == null || !physical.getFileType().contains("video")) {
             throw new RuntimeException("该文件不是视频类型");
         }
-        String s3Key = fileInfo.getId() + "-" + fileInfo.getFileHash()+ "-transcode-"+resolution+".mp4";
+        StorageBucket storageBucket = storageBucketCache.getStorageBucketMap().get(physical.getStorageId());
+        String s3Key = physical.getId() + "-" + physical.getFileHash()+ "-transcode-"+resolution+".mp4";
         // 可根据业务调整为转码后的视频key
-        return generateDownloadUrl(s3Key);
+        return generateDownloadUrl(s3Key, storageBucket);
     }
 
     @Override
     public String getImagePreviewUrl(Long fileId, Long userId) {
-        FileInfo fileInfo = repository.selectByIdAndUserId(fileId, userId);
-        if (fileInfo == null || fileInfo.getFileType() == null || !fileInfo.getFileType().contains("image")) {
+        UserFile userFile = userFileMapper.selectById(fileId);
+        if (userFile == null || userFile.getPhysicalFileId() == null) {
+            throw new RuntimeException("File not found or no physical file");
+        }
+        PhysicalFile physical = physicalFileMapper.selectById(userFile.getPhysicalFileId());
+        if (physical == null || !physical.getFileType().contains("image")) {
             throw new RuntimeException("该文件不是图片类型");
         }
-        String s3Key = fileInfo.getId() + "-" + fileInfo.getFileHash();
+        StorageBucket storageBucket = storageBucketCache.getStorageBucketMap().get(physical.getStorageId());
+        String s3Key = physical.getId() + "-" + physical.getFileHash();
         // 可根据业务调整为缩略图key
-        return generateDownloadUrl(s3Key);
+        return generateDownloadUrl(s3Key, storageBucket);
     }
 }

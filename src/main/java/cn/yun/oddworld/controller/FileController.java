@@ -1,10 +1,6 @@
 package cn.yun.oddworld.controller;
 
-import cn.yun.oddworld.dto.BaseResult;
-import cn.yun.oddworld.dto.FileCompleteRequest;
-import cn.yun.oddworld.dto.FileUploadRequest;
-import cn.yun.oddworld.dto.FileInfoWithThumbnails;
-import cn.yun.oddworld.entity.FileInfo;
+import cn.yun.oddworld.dto.*;
 import cn.yun.oddworld.service.FileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -22,7 +18,7 @@ public class FileController {
 
     @PostMapping("/prepare")
     public ResponseEntity<BaseResult<FileInfo>> prepareFile(@RequestAttribute("userId") Long userId,
-            @RequestBody FileUploadRequest uploadRequest) {
+                                                            @RequestBody FileUploadRequest uploadRequest) {
 
         uploadRequest.setUserId(userId);
         uploadRequest.setStatus(1);
@@ -68,8 +64,8 @@ public class FileController {
 
     @GetMapping("/list")
     public ResponseEntity<BaseResult<List<FileInfoWithThumbnails>>> listFiles(@RequestAttribute("userId") Long userId,
-            @RequestParam(required = true) String path) {
-        List<FileInfoWithThumbnails> fileInfos = fileService.listFilesWithThumbnails(userId, path);
+            @RequestParam(required = true) Long parentId) {
+        List<FileInfoWithThumbnails> fileInfos = fileService.listFilesWithThumbnails(userId, parentId);
         return ResponseEntity.ok(new BaseResult<>(200, null, fileInfos));
     }
 

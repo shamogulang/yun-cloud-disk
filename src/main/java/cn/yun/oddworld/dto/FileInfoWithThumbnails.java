@@ -1,6 +1,5 @@
 package cn.yun.oddworld.dto;
 
-import cn.yun.oddworld.entity.FileInfo;
 import lombok.Data;
 import java.util.List;
 

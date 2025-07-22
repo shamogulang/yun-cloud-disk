@@ -15,11 +15,6 @@ public class FileUploadRequest {
     private Long fileSize;
 
     /**
-     * 文件路径
-     */
-    private String filePath;
-
-    /**
      * 用户ID
      */
     private Long userId;
@@ -33,6 +28,16 @@ public class FileUploadRequest {
      * 文件哈希值
      */
     private String fileHash;
+
+    /**
+     * 父目录ID（0为根目录）
+     */
+    private Long parentId;
+
+    /**
+     * 文件分类：image, video, document, audio, archive, other
+     */
+    private String fileCategory;
 
     private Integer status;
 } 

@@ -1,0 +1,76 @@
+CREATE TABLE `user_file` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT NOT NULL COMMENT '所属用户ID',
+  `parent_id` BIGINT DEFAULT NULL COMMENT '父目录ID（0为根目录）',
+  `file_name` VARCHAR(255) NOT NULL COMMENT '文件名',
+  `physical_file_id` BIGINT NOT NULL COMMENT '关联的物理文件ID',
+  `is_directory` TINYINT(1) DEFAULT 0 COMMENT '是否为目录（0: 文件, 1: 目录）',
+  `file_category` VARCHAR(20) DEFAULT NULL COMMENT '文件分类：image, video, document, audio, archive, other',
+  `status` TINYINT DEFAULT 1 COMMENT '状态：0删除、1正常、2处理中、3失败',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `hidden` TINYINT(1) DEFAULT 0 COMMENT '是否为隐藏',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_parent_id` (`parent_id`),
+  CONSTRAINT `fk_user_file_physical` FOREIGN KEY (`physical_file_id`) REFERENCES `physical_file` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户逻辑文件表';
+
+CREATE TABLE `physical_file` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `file_hash` VARCHAR(32) NOT NULL COMMENT '文件哈希（如 MD5）用于去重',
+  `file_size` BIGINT NOT NULL COMMENT '文件大小（字节）',
+  `file_type` VARCHAR(50) DEFAULT NULL COMMENT 'MIME类型或扩展名',
+  `s3_path` VARCHAR(1024) NOT NULL COMMENT 'S3对象路径，id+file_hash',
+  `reference_count` INT DEFAULT 1 COMMENT '引用次数（逻辑文件引用数量）',
+  `storage_id` BIGINT NOT NULL COMMENT '关联对象存储配置ID',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_file_hash` (`file_hash`),
+  CONSTRAINT `fk_physical_file_storage` FOREIGN KEY (`storage_id`) REFERENCES `storage_bucket` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='物理文件表';
+
+
+CREATE TABLE `file_metadata` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `physical_file_id` BIGINT NOT NULL,
+  `camera_taken_at` DATETIME DEFAULT NULL COMMENT '拍摄时间',
+  `latitude` DECIMAL(10, 7) DEFAULT NULL COMMENT '纬度',
+  `longitude` DECIMAL(10, 7) DEFAULT NULL COMMENT '经度',
+  `video_duration` INT DEFAULT NULL COMMENT '视频时长（秒）',
+  `metadata_json` JSON DEFAULT NULL COMMENT '可选扩展字段（如相机型号等）',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_physical_file_id` (`physical_file_id`),
+  CONSTRAINT `fk_metadata_physical_file` FOREIGN KEY (`physical_file_id`) REFERENCES `physical_file` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='物理文件元数据';
+
+CREATE TABLE `file_derivative` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `physical_file_id` BIGINT NOT NULL COMMENT '来源物理文件',
+  `type` VARCHAR(50) NOT NULL COMMENT '类型：thumbnail, preview, transcoded',
+  `size` INT DEFAULT NULL COMMENT '大小（字节）',
+  `s3_path` VARCHAR(1024) NOT NULL COMMENT 'S3 路径',
+  `format` VARCHAR(50) DEFAULT NULL COMMENT '格式（如jpg、mp4）',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_physical_file` (`physical_file_id`),
+  CONSTRAINT `fk_derivative_physical` FOREIGN KEY (`physical_file_id`) REFERENCES `physical_file` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='衍生文件表';
+
+
+CREATE TABLE `storage_bucket` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(100) NOT NULL COMMENT '逻辑名称',
+  `provider` VARCHAR(50) NOT NULL COMMENT 'S3, MinIO, OSS 等',
+  `bucket_name` VARCHAR(100) NOT NULL,
+  `region` VARCHAR(100) DEFAULT NULL,
+  `endpoint` VARCHAR(255) NOT NULL,
+  `access_key` VARCHAR(255) DEFAULT NULL,
+  `secret_key` VARCHAR(255) DEFAULT NULL,
+  `is_default` TINYINT(1) DEFAULT 0 COMMENT '是否默认用于上传',
+  `status` TINYINT DEFAULT 1 COMMENT '状态：0删除、1正常、2空间已经用完',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_bucket_name_region` (`bucket_name`, `region`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对象存储配置表';
