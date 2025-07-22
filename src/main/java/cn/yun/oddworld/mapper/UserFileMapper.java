@@ -7,6 +7,7 @@ import java.util.List;
 @Mapper
 public interface UserFileMapper {
     @Insert("INSERT INTO user_file (user_id, parent_id, file_name, physical_file_id, is_directory, file_category, status, created_at, updated_at, hidden) VALUES (#{userId}, #{parentId}, #{fileName}, #{physicalFileId}, #{isDirectory}, #{fileCategory}, #{status}, #{createdAt}, #{updatedAt}, #{hidden})")
+    @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(UserFile userFile);
 
     @Update("UPDATE user_file SET user_id=#{userId}, parent_id=#{parentId}, file_name=#{fileName}, physical_file_id=#{physicalFileId}, is_directory=#{isDirectory}, file_category=#{fileCategory}, status=#{status}, updated_at=#{updatedAt}, hidden=#{hidden} WHERE id=#{id}")
@@ -21,6 +22,19 @@ public interface UserFileMapper {
     @Select("SELECT * FROM user_file WHERE user_id=#{userId} and status= 2")
     List<UserFile> selectByUserId(@Param("userId") Long userId);
 
-    @Select("SELECT * FROM user_file WHERE user_id=#{userId} and parent_id = #{parentId} order by is_directory desc, updated_at desc")
+    @Select({
+            "<script>",
+            "SELECT * FROM user_file",
+            "WHERE user_id = #{userId}",
+            "AND status = 2",
+            "AND id IN",
+            "<foreach collection='fileIds' item='id' open='(' separator=',' close=')'>",
+            "#{id}",
+            "</foreach>",
+            "</script>"
+    })
+    List<UserFile> selectByUserIdAndFileIds(@Param("userId") Long userId, @Param("fileIds") List<Long> fileIds);
+
+    @Select("SELECT * FROM user_file WHERE user_id=#{userId} and status=2 and parent_id = #{parentId} order by is_directory desc, updated_at desc")
     List<UserFile> selectByUserIdAndParentId(@Param("userId") Long userId, @Param("parentId") Long parentId);
 } 

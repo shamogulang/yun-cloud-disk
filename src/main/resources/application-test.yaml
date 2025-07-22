@@ -42,7 +42,7 @@ aws:
 auth:
   whitelist:
     - /error
-    - /init/user
+    -
 rocketmq:
   name-server: 127.0.0.1:9876
   producer:
@@ -50,3 +50,7 @@ rocketmq:
 
 user:
   auth: http://localhost:8081
+
+third:
+  auth:
+    secret: 12345678

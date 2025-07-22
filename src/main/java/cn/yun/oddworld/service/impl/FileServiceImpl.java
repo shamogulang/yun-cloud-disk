@@ -30,10 +30,8 @@ import java.net.URI;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.List;
-import java.util.UUID;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+
 import cn.yun.oddworld.dto.FileInfoWithThumbnails;
 import cn.yun.oddworld.dto.ThumbnailUrl;
 import cn.yun.oddworld.mapper.UserFileMapper;
@@ -320,19 +318,20 @@ public class FileServiceImpl implements FileService {
     @Override
     public void initializeUser(Long userId) {
         final String dirName = "我的应用收藏";
-        final Long parentId = null;
         List<UserFile> existingDirs = userFileMapper.selectByUserId(userId);
         boolean exists = existingDirs.stream().anyMatch(f -> Boolean.TRUE.equals(f.getIsDirectory()) && dirName.equals(f.getFileName()) && (f.getParentId() == null));
         if (!exists) {
             UserFile dir = new UserFile();
             dir.setUserId(userId);
-            dir.setParentId(parentId);
+            dir.setParentId(0L);
             dir.setFileName(dirName);
             dir.setIsDirectory(true);
-            dir.setFileCategory("other");
+            // if the file is a directory, this field default value is empty
+            dir.setFileCategory("");
             dir.setStatus(2);
             dir.setCreatedAt(java.time.LocalDateTime.now());
             dir.setUpdatedAt(java.time.LocalDateTime.now());
+            dir.setPhysicalFileId(0L);
             dir.setHidden(false);
             userFileMapper.insert(dir);
         }
@@ -341,13 +340,13 @@ public class FileServiceImpl implements FileService {
     @Override
     public int countNormalFiles(Long userId) {
         List<UserFile> files = userFileMapper.selectByUserId(userId);
-        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 1).count();
+        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 2).count();
     }
 
     @Override
     public int countRecentNormalFiles(Long userId, java.time.LocalDateTime fromTime) {
         List<UserFile> files = userFileMapper.selectByUserId(userId);
-        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 1 && f.getCreatedAt() != null && f.getCreatedAt().isAfter(fromTime)).count();
+        return (int) files.stream().filter(f -> f.getStatus() != null && f.getStatus() == 2 && f.getCreatedAt() != null && f.getCreatedAt().isAfter(fromTime)).count();
     }
 
     @Override
@@ -366,6 +365,17 @@ public class FileServiceImpl implements FileService {
     @Override
     public List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, Long parentId) {
         List<UserFile> userFiles = userFileMapper.selectByUserIdAndParentId(userId, parentId);
+        List<FileInfoWithThumbnails> result = new java.util.ArrayList<>();
+        for (UserFile userFile : userFiles) {
+            PhysicalFile physical = userFile.getPhysicalFileId() != null ? physicalFileMapper.selectById(userFile.getPhysicalFileId()) : null;
+            result.add(mapToFileInfoWithThumbnails(userFile, physical));
+        }
+        return result;
+    }
+
+    @Override
+    public List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, List<Long> fileIds) {
+        List<UserFile> userFiles = userFileMapper.selectByUserIdAndFileIds(userId, fileIds);
         List<FileInfoWithThumbnails> result = new java.util.ArrayList<>();
         for (UserFile userFile : userFiles) {
             PhysicalFile physical = userFile.getPhysicalFileId() != null ? physicalFileMapper.selectById(userFile.getPhysicalFileId()) : null;

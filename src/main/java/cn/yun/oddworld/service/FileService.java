@@ -26,4 +26,5 @@ public interface FileService {
     int countRecentNormalFiles(Long userId, java.time.LocalDateTime fromTime);
     List<FileInfo> getRecentFiles(Long userId, java.time.LocalDateTime fromTime);
     List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, Long parentId);
-} 
+    List<FileInfoWithThumbnails> listFilesWithThumbnails(Long userId, List<Long> fileIds);
+}

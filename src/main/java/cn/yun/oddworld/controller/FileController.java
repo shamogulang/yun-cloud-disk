@@ -69,6 +69,12 @@ public class FileController {
         return ResponseEntity.ok(new BaseResult<>(200, null, fileInfos));
     }
 
+    @PostMapping("/listByIds")
+    public ResponseEntity<BaseResult<List<FileInfoWithThumbnails>>> listFilesByIds(@RequestBody ListByIdsReq listByIdsReq) {
+        List<FileInfoWithThumbnails> fileInfos = fileService.listFilesWithThumbnails(listByIdsReq.getUserId(), listByIdsReq.getFileIds());
+        return ResponseEntity.ok(new BaseResult<>(200, null, fileInfos));
+    }
+
     @GetMapping("/{fileId}/url")
     public ResponseEntity<String> getFileUrl(
             @PathVariable Long fileId,
